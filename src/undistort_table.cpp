@@ -6,17 +6,16 @@ using namespace std;
 
 void write_gp_map(const cv::Mat &map1, cv::Mat &map2, 
             const std::string &float_table_name, const std::string &int_table_name) {
-    std::ofstream out_file_float(float_table_name);
+    std::ofstream out_file_float(float_table_name, std::ios::binary);
     if (!out_file_float.is_open()) {
         std::cerr << "Failed to open file for writing: " << float_table_name << std::endl;
         return;
     }
-    std::ofstream out_file_int(int_table_name);
+    std::ofstream out_file_int(int_table_name, std::ios::binary);
     if (!out_file_int.is_open()) {
         std::cerr << "Failed to open file for writing: " << int_table_name << std::endl;
         return;
     }
-    int count = 0;
     for (int i=0;i<map1.rows;++i) {
         for (int j=0;j<map1.cols;++j) {
             /*
@@ -37,25 +36,18 @@ void write_gp_map(const cv::Mat &map1, cv::Mat &map2,
 
             val = fy_cv << 28 | iy_cv << 16 |
                   fx_cv << 12 | ix_cv;
-            out_file_float << val << ",";
-            count++;
-            if (count % 50 == 0) {
-                out_file_float << std::endl; // New line every 50 values for readability
-            }
+            out_file_float.write(reinterpret_cast<const char*>(&val), sizeof(val));
 
             //int_map
             val = (iy_cv << 16) | ix_cv;
-            out_file_int << val << ",";
-            if (count % 50 == 0) {
-                out_file_int << std::endl; // New line every 50 values for readability
-            }
+            out_file_int.write(reinterpret_cast<const char*>(&val), sizeof(val));
         }
     }
 
     out_file_float.close();
     out_file_int.close();
-    std::cout << "Undistortion maps saved to: " << float_table_name << std::endl;
-    std::cout << "Undistortion maps saved to: " << int_table_name << std::endl;
+    std::cout << "Undistortion maps (binary) saved to: " << float_table_name << std::endl;
+    std::cout << "Undistortion maps (binary) saved to: " << int_table_name << std::endl;
 }
 
 int main(int argc, char** argv)
