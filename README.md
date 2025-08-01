@@ -1,9 +1,4 @@
-# thermal_homography
-
-### Purpose
-Find a homography from thermal image to the camera.
-
-### Build
+# Build
 First, you have to build opencv 4.11.0 on your host. Follow the official instruction:
 https://docs.opencv.org/4.x/d7/d9f/tutorial_linux_install.html
 
@@ -36,6 +31,11 @@ cd build
 cmake ..
 make
 ```
+
+# thermal_homography
+
+### Purpose
+Find a homography from thermal image to the camera.
 
 ### How to use it
 
@@ -73,3 +73,14 @@ cd build
  - For thermal data, press ```n``` for next frame, press ```space``` for clicking, press ```esc``` when you finished.
  - For video data, press ```n``` for next frame, press ```space``` for clicking, press ```esc``` when you finished.
  - The homography information is showed on the console.
+
+# Undistort table
+1. Record a video with a chessboard.
+2. Get camera parameter with opencv tool.
+```
+./opencv_interactive-calibration -v=[video file] -t=chessboard -w=6 -h=9 -of=[camera_param.yaml]
+```
+3. Generate undistort table for General Plus format
+```
+./undistort_table ./undistort_video [video_file] [camera_param.yaml] [float_table_name] [int_table_name]
+```

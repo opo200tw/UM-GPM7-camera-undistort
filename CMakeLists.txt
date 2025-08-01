@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(thermal)
+project(image_tool)
 
 set(CMAKE_CXX_STANDARD 11)
 
@@ -12,4 +12,7 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 add_executable(thermal_homography src/thermal_homography.cpp)
 target_link_libraries(thermal_homography PRIVATE ${OpenCV_LIBS})
+
+add_executable(undistort_table src/undistort_table.cpp)
+target_link_libraries(undistort_table ${OpenCV_LIBS})
 
