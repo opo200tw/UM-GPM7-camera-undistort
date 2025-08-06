@@ -4,6 +4,10 @@ project(image_tool)
 
 set(CMAKE_CXX_STANDARD 11)
 
+# Set OpenCV_DIR to point to the local build
+set(OpenCV_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build)
+set(CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/build ${CMAKE_PREFIX_PATH})
+
 # Find OpenCV package
 find_package(OpenCV REQUIRED)
 

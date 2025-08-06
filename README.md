@@ -4,6 +4,15 @@ https://docs.opencv.org/4.x/d7/d9f/tutorial_linux_install.html
 
 You can disable some unnecessary options for speedup:
 ```
+# Download and unpack sources
+
+wget -O opencv.zip https://github.com/opencv/opencv/archive/4.x.zip
+wget -O opencv_contrib.zip https://github.com/opencv/opencv_contrib/archive/4.x.zip
+unzip opencv.zip
+unzip opencv_contrib.zip
+
+# Build target
+
 mkdir build
 cd build
 cmake -D OPENCV_EXTRA_MODULES_PATH=../opencv_contrib-4.11.0/modules ../opencv-4.11.0 \
@@ -29,6 +38,7 @@ Second, build our application
 mkdir build
 cd build
 cmake ..
+cd ..
 make
 ```
 
