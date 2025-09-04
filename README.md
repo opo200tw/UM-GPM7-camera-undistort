@@ -82,5 +82,5 @@ cd build
 ```
 3. Generate undistort table for General Plus format
 ```
-./undistort_table ./undistort_video [video_file] [camera_param.yaml] [float_table_name] [int_table_name]
+./undistort_table [video_file] [camera_param.yaml] [float_table_name] [int_table_name]
 ```

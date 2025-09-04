@@ -53,7 +53,7 @@ void write_gp_map(const cv::Mat &map1, cv::Mat &map2,
 int main(int argc, char** argv)
 {
     if (argc < 5) {
-        std::cerr << "./undistort_video [video_file] [camera_params.yml] [float_table_name] [int_table_name]" << std::endl;
+        std::cerr << "./undistort_table [video_file] [camera_params.yml] [float_table_name] [int_table_name]" << std::endl;
         return -1;
     }
 
