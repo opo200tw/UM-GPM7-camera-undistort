@@ -1,4 +1,6 @@
 #include <opencv2/opencv.hpp>
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
 #include <fstream>
 
@@ -16,30 +18,32 @@ void write_gp_map(const cv::Mat &map1, cv::Mat &map2,
         std::cerr << "Failed to open file for writing: " << int_table_name << std::endl;
         return;
     }
+    // Each entry is the source pixel for output pixel (row i, column j), y in the high half:
+    //   float: 4 bit Y fraction | 12 bit Y integer | 4 bit X fraction | 12 bit X integer (bit 31..0)
+    //   int:   16 bit Y integer | 16 bit X integer (bit 31..0)
+    // Source coordinates are clamped to the frame: the firmware rejects the whole int table
+    // when any entry is outside it.
+    const int max_x = map1.cols - 1;
+    const int max_y = map1.rows - 1;
     for (int i=0;i<map1.rows;++i) {
         for (int j=0;j<map1.cols;++j) {
-            /*
-            4 bit X fraction | 12 bit X integer | 4 bit Y fraction | 12 bit Y integer 
-            */
-            int val = 0;
-            // Reconstruct full floating-point coordinates from OpenCV maps
-            short ix_cv = map1.at<cv::Vec2s>(i, j)[0];
-            short iy_cv = map1.at<cv::Vec2s>(i, j)[1];
-            unsigned short val_cv = map2.at<unsigned short>(i, j);
-            char fx_cv = (val_cv & 31) / 32.0;
-            char fy_cv = ((val_cv >> 5) & 31) / 32.0;
+            // OpenCV fixed-point map: coordinate = map1 (floor) + 5-bit fraction from map2,
+            // x fraction in bits 0-4, y fraction in bits 5-9
+            unsigned short frac = map2.at<unsigned short>(i, j);
+            int x32 = map1.at<cv::Vec2s>(i, j)[0] * 32 + (frac & 31);
+            int y32 = map1.at<cv::Vec2s>(i, j)[1] * 32 + ((frac >> 5) & 31);
 
-            fx_cv = fx_cv >> 1;
-            fy_cv = fy_cv >> 1;
-            ix_cv = (ix_cv << 4) >> 4;
-            iy_cv = (iy_cv << 4) >> 4;
-
-            val = fy_cv << 28 | iy_cv << 16 |
-                  fx_cv << 12 | ix_cv;
+            // float_map: round to 1/16 pixel
+            int x16 = std::min(std::max((x32 + 1) >> 1, 0), max_x * 16);
+            int y16 = std::min(std::max((y32 + 1) >> 1, 0), max_y * 16);
+            uint32_t val = ((uint32_t)(y16 & 15) << 28) | ((uint32_t)((y16 >> 4) & 0xFFF) << 16) |
+                           ((uint32_t)(x16 & 15) << 12) | (uint32_t)((x16 >> 4) & 0xFFF);
             out_file_float.write(reinterpret_cast<const char*>(&val), sizeof(val));
 
-            //int_map
-            val = (iy_cv << 16) | ix_cv;
+            // int_map: round to the nearest pixel
+            int xr = std::min(std::max((x32 + 16) >> 5, 0), max_x);
+            int yr = std::min(std::max((y32 + 16) >> 5, 0), max_y);
+            val = ((uint32_t)yr << 16) | (uint32_t)xr;
             out_file_int.write(reinterpret_cast<const char*>(&val), sizeof(val));
         }
     }
