@@ -28,7 +28,8 @@ echo "按 Ctrl+C 停止錄製"
 
 export GST_DEBUG=$DEBUG_LEVEL
 
-gst-launch-1.0 --gst-debug-level=$DEBUG_LEVEL \
+# -e: Ctrl-C sends EOS first, so matroskamux finishes the file
+gst-launch-1.0 -e --gst-debug-level=$DEBUG_LEVEL \
     rtspsrc location="$RTSP_URL" latency=0 buffer-mode=auto ! \
     rtph264depay ! h264parse ! tee name=t \
     t. ! queue ! matroskamux ! filesink location="$OUTPUT_FILE" \
@@ -41,7 +42,7 @@ else
     echo "請確認 RTSP URL 是否正確: $RTSP_URL"
     echo "嘗試使用備用 pipeline..."
     
-    gst-launch-1.0 --gst-debug-level=$DEBUG_LEVEL \
+    gst-launch-1.0 -e --gst-debug-level=$DEBUG_LEVEL \
         rtspsrc location="$RTSP_URL" latency=0 ! \
         decodebin ! videoconvert ! x264enc ! matroskamux ! \
         filesink location="$OUTPUT_FILE"

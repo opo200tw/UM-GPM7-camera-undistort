@@ -12,47 +12,14 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import dewarp_table as dt  # noqa: E402
+import synth_board as sb  # noqa: E402
 
-SIZE = (1280, 720)
-K = np.array([[900.0, 0, 640], [0, 900.0, 360], [0, 0, 1]])
-D = np.array([-0.30, 0.10, 0.0, 0.0, 0.0])
-BOARD = (6, 9)
+SIZE = (sb.W, sb.H)
 
 
-def board_texture(sq=60, margin=60):
-    cols, rows = BOARD[0] + 1, BOARD[1] + 1
-    img = np.full((rows * sq + 2 * margin, cols * sq + 2 * margin), 255, np.uint8)
-    for r in range(rows):
-        for c in range(cols):
-            if (r + c) % 2 == 0:
-                img[margin + r * sq:margin + (r + 1) * sq, margin + c * sq:margin + (c + 1) * sq] = 0
-    return img, sq, margin
-
-
-def distorted_views(n):
-    """Board seen by a pinhole camera K, then pushed through the lens model D."""
-    tex, sq, margin = board_texture()
-    th, tw = tex.shape
-    # Distorted pixel -> ideal pixel, so the ideal render can be resampled into the lens image
-    w, h = SIZE
-    pts = np.stack(np.meshgrid(np.arange(w), np.arange(h)), -1).reshape(-1, 1, 2).astype(np.float32)
-    ideal = cv2.undistortPointsIter(pts, K, D, None, K, (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 40, 1e-6))
-    mapx, mapy = [m.reshape(h, w).astype(np.float32) for m in (ideal[:, 0, 0], ideal[:, 0, 1])]
-    rng = np.random.default_rng(1)
-    views = []
-    while len(views) < n:
-        rvec = rng.uniform(-0.5, 0.5, 3)
-        tvec = np.array([rng.uniform(-3.5, 1.0), rng.uniform(-2.5, 0.5), rng.uniform(9, 13)])
-        # Texture pixel -> board units (one square = 1), board centred on its corner grid
-        corners_tex = np.float32([[0, 0], [tw, 0], [tw, th], [0, th]])
-        corners_obj = np.float32([[(x - margin) / sq - 1, (y - margin) / sq - 1, 0] for x, y in corners_tex])
-        img_pts, _ = cv2.projectPoints(corners_obj, rvec, tvec, K, None)
-        H = cv2.getPerspectiveTransform(corners_tex, img_pts.reshape(4, 2).astype(np.float32))
-        render = cv2.warpPerspective(tex, H, SIZE, borderValue=128)
-        lens = cv2.remap(render, mapx, mapy, cv2.INTER_LINEAR, borderValue=128)
-        if cv2.findChessboardCornersSB(lens, BOARD)[0]:
-            views.append(cv2.cvtColor(lens, cv2.COLOR_GRAY2BGR))
-    return views
+def run_tool(cwd, *args):
+    return subprocess.run([sys.executable, os.path.join(ROOT, "dewarp_table.py"), *args],
+                          capture_output=True, text=True, cwd=cwd)
 
 
 class Pack(unittest.TestCase):
@@ -72,60 +39,73 @@ class Pack(unittest.TestCase):
         self.assertEqual(list(t), expect)
 
 
-class EndToEnd(unittest.TestCase):
+class SyntheticBoard(unittest.TestCase):
+    """The whole host-side flow on synth_board.py views: the stand-in for a person holding a board."""
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.src = os.path.join(cls.tmp.name, "frames")
         os.mkdir(cls.src)
-        for i, v in enumerate(distorted_views(14)):
-            cv2.imwrite(os.path.join(cls.src, f"{i:03d}.png"), v)
+        for i, v in enumerate(sb.views()):
+            cv2.imwrite(os.path.join(cls.src, f"view_{i:02d}.png"), v)
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def run_tool(self, *args):
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "dewarp_table.py"), "--step", "1", *args],
-                           capture_output=True, text=True, cwd=self.tmp.name)
+    def run_ok(self, *args):
+        r = run_tool(self.tmp.name, *args)
         self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout
+        return r
 
     def test_calibrate_then_check(self):
-        out = self.run_tool("calibrate", self.src)
+        # No --step: an image directory must default to every image
+        r = self.run_ok("calibrate", self.src)
+        self.assertNotIn("frame corner", r.stderr)
+        self.assertNotIn("under 5 px", r.stderr)
         (version,) = os.listdir(os.path.join(self.tmp.name, "tables"))
         table = os.path.join("tables", version, "dewarp_int.bin")
         with open(os.path.join(self.tmp.name, table), "rb") as f:
             data = f.read()
         crc = f"{zlib.crc32(data):08x}"
         self.assertEqual(len(data), SIZE[0] * SIZE[1] * 4)
-        self.assertIn(f"crc32 {crc}", out)
+        self.assertIn(f"crc32 {crc}", r.stdout)
         self.assertTrue(version.endswith("-" + crc))
+
         fs = cv2.FileStorage(os.path.join(self.tmp.name, "tables", version, "camera_param.yml"),
                              cv2.FILE_STORAGE_READ)
         self.assertEqual(fs.getNode("crc32").string(), crc)
+        self.assertEqual(int(fs.getNode("views").real()), len(os.listdir(self.src)))
+        self.assertLess(fs.getNode("rms").real(), 0.3)
+        self.assertAlmostEqual(fs.getNode("dist_coeffs").mat().ravel()[0], sb.D[0], delta=0.02)
         fs.release()
 
         got = np.frombuffer(data, "<u4")
-        want = dt.make_table(K, D, SIZE)
-        dx = np.abs((got & 0xFFFF).astype(int) - (want & 0xFFFF).astype(int))
-        dy = np.abs((got >> 16).astype(int) - (want >> 16).astype(int))
-        err = np.hypot(dx, dy)
+        want = dt.make_table(sb.K, sb.D, SIZE)
+        err = np.hypot((got & 0xFFFF).astype(int) - (want & 0xFFFF).astype(int),
+                       (got >> 16).astype(int) - (want >> 16).astype(int))
         self.assertLess(err.mean(), 1.0)
         self.assertLess(np.percentile(err, 95), 2.0)
 
-        before = float(self.run_tool("check", self.src).split()[4])
-        after = float(self.run_tool("check", self.src, "--table", table).split()[4])
-        self.assertGreater(before, 2.0)
-        self.assertLess(after, 1.0)
+        # "views N, bend median M px, max X px": compare the largest bend
+        before = float(self.run_ok("check", self.src).stdout.split()[7])
+        predicted = float(self.run_ok("check", self.src, "--table", table).stdout.split()[7])
+        self.assertGreater(before, 1.0)
+        self.assertLess(predicted, 0.6)
+
+    def test_max_views_caps_a_file(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            r = run_tool(cwd, "calibrate", "--max-views", "12", self.src)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("views 12,", r.stderr)
 
     def test_failures_write_nothing(self):
-        for args, why in ((["--size", "640x480", "calibrate"], "expected 640x480"),
+        for args, why in ((["calibrate", "--size", "640x480"], "expected 640x480"),
                           (["calibrate", "--min-views", "99"], "need 99"),
                           (["calibrate", "--max-rms", "0.001"], "above --max-rms")):
             with tempfile.TemporaryDirectory() as cwd:
-                r = subprocess.run([sys.executable, os.path.join(ROOT, "dewarp_table.py"), "--step", "1",
-                                    *args, self.src], capture_output=True, text=True, cwd=cwd)
+                r = run_tool(cwd, *args, self.src)
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn(why, r.stderr)
                 self.assertEqual(os.listdir(cwd), [])

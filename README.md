@@ -93,43 +93,49 @@ The table is one little-endian 32-bit entry per output pixel of the stream: sour
 
 ## Flow
 
+Steps marked HUMAN need a person at the camera; everything marked AUTO runs from a script or an agent on the Mac. HUMAN steps 3, 4 and 10 are the only ones that need hands.
+
 ```mermaid
 flowchart TD
-    A["Back up the card, take dewarp_int.bin off it"] --> B["Boot the camera"]
-    B --> C{"UART: Failed to open dewarp_int.bin,<br/>using Identity table"}
-    C -- "not shown" --> A
-    C -- shown --> D["Record raw footage:<br/>chessboard through corners and edges"]
-    D --> E["check raw footage<br/>= bend BEFORE"]
-    E --> F["calibrate raw footage"]
-    F --> G{"1280x720 frames, 10+ boards,<br/>rms 1 px or less"}
-    G -- no --> D
-    G -- yes --> H["tables/date-crc32/:<br/>dewarp_int.bin, camera_param.yml"]
-    H --> W{"Warning: corner not covered<br/>or shift under 5 px"}
-    W -- yes --> D
-    W -- no --> I["check raw footage --table dewarp_int.bin<br/>= bend PREDICTED"]
-    I --> J["Copy that dewarp_int.bin to the card root, reboot"]
-    J --> K{"UART: Loaded dewarp table,<br/>crc32 equals calibrate's"}
-    K -- no --> J
-    K -- yes --> L["Record again, check<br/>= bend AFTER"]
-    L --> M{"AFTER near PREDICTED,<br/>well below BEFORE"}
-    M -- no --> D
-    M -- yes --> N["Ship the table"]
+    S1["1 AUTO: back up the card,<br/>take dewarp_int.bin off it"] --> S2{"2 AUTO: boot, UART shows<br/>using Identity table"}
+    S2 -- no --> S1
+    S2 -- yes --> S3["3 HUMAN: count the board's<br/>inner corners"]
+    S3 --> S4["4 HUMAN: move the board through corners and edges<br/>AUTO: record 30 s over UDP"]
+    S4 --> S5["5 AUTO: check = bend BEFORE"]
+    S5 --> S6{"6 AUTO: calibrate<br/>passes, no warning"}
+    S6 -- "fails or warns" --> S4
+    S6 -- yes --> S7["7 AUTO: check --table = bend PREDICTED"]
+    S7 --> S8["8 AUTO: copy the table to the card root"]
+    S8 --> S9{"9 AUTO: boot, UART crc32<br/>equals calibrate's"}
+    S9 -- no --> S8
+    S9 -- yes --> S10["10 HUMAN: move the board again<br/>AUTO: record 30 s"]
+    S10 --> S11{"11 AUTO: check = bend AFTER,<br/>near PREDICTED"}
+    S11 -- no --> S4
+    S11 -- yes --> S12["12 AUTO: commit the version,<br/>restore or keep the card table"]
+    classDef human fill:#ffe0b3,stroke:#c77700
+    class S3,S4,S10 human
 ```
 
 ## Steps
 
-### 1. Clear the card
-The RTSP stream is already remapped by the IPU when the card holds `dewarp_int.bin`, and footage taken through a table calibrates to a table that barely moves any pixel. Back up the card, take `dewarp_int.bin` off its root and boot. Go on only when the UART shows `Failed to open dewarp_int.bin, using Identity table`.
+`<camera>` is the camera's IP address, `<card>` the card's mount point on the Mac, and `<v>` the version directory `calibrate` prints, `tables/<date>-<crc32>`. Host times were measured on an Apple M3 Max with a 30 s, 25 fps recording.
 
-### 2. Record
-Record the stream with `start_gstreamer.sh`, or pass the `rtsp://` URL straight to the script in the next steps. The camera's RTSP server refuses TCP interleaved transport (SETUP answers 461 Unsupported Transport), so keep the default UDP transport of gstreamer and OpenCV and do not force `rtsp_transport` to tcp. Move a chessboard with 6x9 inner corners (7x10 squares) across the whole frame, corners and edges included, tilting it on the way. About 30 seconds is enough.
+| # | Who | Do | Expect | If not | Time |
+|---|-----|----|--------|--------|------|
+| 1 | AUTO | UART `usb storage rw`; when `<card>` mounts, copy the whole card to a backup directory, then move `<card>/dewarp_int.bin` into it; `diskutil eject <card>`; UART `usb camera` | the backup holds `dewarp_int.bin`, the card root does not | the card mounts read-only: the build has `USB_STORAGE_WPROTECT=1`, use another image | bench timing pending |
+| 2 | AUTO | wait for boot and watch the UART | `[W][IPU] Failed to open dewarp_int.bin, using Identity table` | `Loaded dewarp table`: the file is still on the card, back to step 1 | bench timing pending |
+| 3 | HUMAN | count the inner corners of the board (corners where four squares meet), across then down | 6x9, the default | pass `--board <across>x<down>` in steps 5, 6, 7 and 11 | bench timing pending; once per board |
+| 4 | HUMAN + AUTO | person: move the board across the whole frame, into each corner and along each edge, tilting it; agent at the same time: `ffmpeg -rtsp_transport udp -i rtsp://<camera>:8080 -t 30 -c copy raw.mkv` | `raw.mkv`, H.264 1280x720, 30 s | `461 Unsupported Transport`: TCP was used, keep `-rtsp_transport udp`; no frames: check the IP and that the stream is up | 30 s |
+| 5 | AUTO | `python3 dewarp_table.py check raw.mkv` | `views N, bend median M px, max X px`; note it as BEFORE | `board not found in any frame`: board too small, blurred or the wrong `--board` | 2 s |
+| 6 | AUTO | `python3 dewarp_table.py calibrate raw.mkv` | `tables/<date>-<crc32>/dewarp_int.bin: 3686400 bytes, crc32 <crc>, max shift S px`, and no warning line | a failure or a warning listed below: record again (step 4) | 4 s |
+| 7 | AUTO | `python3 dewarp_table.py check raw.mkv --table <v>/dewarp_int.bin` | max bend well below BEFORE; note it as PREDICTED | not lower: the footage does not cover the frame, record again | 3 s |
+| 8 | AUTO | UART `usb storage rw`; copy `<v>/dewarp_int.bin` to the card root under that name; `diskutil eject <card>`; UART `usb camera` | the card root holds the new file, 3686400 bytes | the copy fails: card read-only, see step 1 | bench timing pending |
+| 9 | AUTO | wait for boot and watch the UART | `[I][IPU] Loaded dewarp table: 3686400 bytes from dewarp_int.bin, crc32 <crc>`, with `<crc>` from step 6 | another CRC: an old file is on the card; `Dewarp table size ...` or `entry ... outside`: the file is damaged, copy again | bench timing pending |
+| 10 | HUMAN + AUTO | as step 4, writing `after.mkv` | `after.mkv`, 30 s | as step 4 | 30 s |
+| 11 | AUTO | `python3 dewarp_table.py check after.mkv` | max bend close to PREDICTED and well below BEFORE; note it as AFTER | much higher: the device did not load this table (recheck step 9) or the board did not cover the frame | 2 s |
+| 12 | AUTO | `git add <v>` and commit; on the card either keep the new table or put the backup's `dewarp_int.bin` back (as step 8) and check its CRC on boot (as step 9) | the version is in git (the `.bin` through LFS) | | bench timing pending |
 
-### 3. Measure before
-`python3 dewarp_table.py check <footage>` prints how far the board's rows and columns bend from straight lines, as the median and the largest value over the frames, in pixels. Note it as BEFORE.
-
-### 4. Calibrate
-`python3 dewarp_table.py calibrate <footage>` takes the footage as a video file, an `rtsp://` URL or an image directory. It looks for the board in every 10th frame and stops after 40 boards, at the end of the input or on Ctrl-C; a live stream that drops counts as the end. It writes `dewarp_int.bin` and `camera_param.yml` into a new version directory, `tables/<date>-<crc32>/` (see [Versions](#versions)), and prints the table's path, size, CRC32 and largest pixel shift.
-
+### What calibrate rejects
 It fails and writes nothing when:
 - a frame is not 1280x720, the stream size the firmware expects;
 - the board is found in fewer than 10 frames;
@@ -139,17 +145,17 @@ It warns, and you should record again, when:
 - no board reached one of the frame corners, because the table is extrapolated there;
 - no pixel moves by 5 px or more, which usually means the card still held a table during recording.
 
-### 5. Predict
-`python3 dewarp_table.py check <footage> --table tables/<date>-<crc32>/dewarp_int.bin` remaps each frame with the table the way the firmware does (nearest neighbour) before measuring. Note it as PREDICTED; it should be well below BEFORE.
+### Automated and manual
+Automated: card backup and file moves, boot checks on the UART, recording, both `check` runs, `calibrate`, CRC comparison, committing the version.
 
-### 6. Load on the device
-Copy the version's `dewarp_int.bin` to the card root, keeping that file name, and reboot. The UART must show `Loaded dewarp table: 3686400 bytes from dewarp_int.bin, crc32 <value>` with the CRC32 that `calibrate` printed. Any other line means the firmware fell back to the identity table and logged why.
+Never automated: moving a real chessboard in front of the real lens (steps 4 and 10). The table describes that lens, so a rendered board cannot stand in for it. Counting the corners (step 3) is needed once per physical board.
 
-### 7. Measure after
-Record again with the table loaded and run `check` on that footage. AFTER should be close to PREDICTED. The table is then ready to ship.
+Stand-in for the manual steps: `python3 synth_board.py <dir>` renders a 6x9 board through a known lens (fx = fy = 900, k1 = -0.30, k2 = 0.10) in poses that cover the corners, edges and middle, and writes the views as PNG images. Use `<dir>` in place of `raw.mkv` in steps 5 to 7, and copy that table through steps 8 and 9, to check the whole flow on the device without a person. The bend numbers it gives prove the pipeline, not the lens. It takes under 1 s for the images and about 1 s per tool step.
 
 ### Options
-`--board`, `--size`, `--step` and `--max-views` apply to both subcommands and go before the subcommand. `--min-views`, `--max-rms` and `-o` (the parent of the version directories) belong to `calibrate`, and `--table` to `check`. Keep `--size` at the stream size: the firmware rejects a table of any other size.
+All options go after the subcommand. Both take `--board`, `--size`, `--step` (default 10 for a video or stream, 1 for an image directory) and `--max-views`. `calibrate` uses at most `--max-views` boards (default 40), spread over the whole recording; a stream URL stops reading once it has that many. `calibrate` also takes `--min-views`, `--max-rms` and `-o` (the parent of the version directories), and `check` takes `--table`. Keep `--size` at the stream size: the firmware rejects a table of any other size.
+
+The camera's RTSP server refuses TCP interleaved transport (SETUP answers 461 Unsupported Transport). Use UDP: ffmpeg with `-rtsp_transport udp`, or `start_gstreamer.sh`, whose `rtspsrc` uses UDP by default and finishes the file on Ctrl-C.
 
 ### Versions
 Every `calibrate` run that succeeds adds a directory under `tables/` named after the date and the table's CRC32, holding the table and the `camera_param.yml` it came from. The YAML also records the CRC32 and the footage it was calibrated from. Old versions stay where they are, so going back to one means copying its `dewarp_int.bin` to the card again.
@@ -157,7 +163,13 @@ Every `calibrate` run that succeeds adds a directory under `tables/` named after
 The firmware only opens `dewarp_int.bin` in the card root and has no version field. A version is identified by the CRC32 the UART prints on load, which is the CRC32 in the directory name. Commit the versions you keep: `tables/**/*.bin` is stored with git LFS.
 
 ## Tests
-`python3 -m unittest discover tests` renders a chessboard through a known lens, calibrates it and compares the table with the one the known lens gives. It also checks the bit layout, rounding and clamping.
+`python3 -m unittest discover tests` takes about 6 s and needs no camera. It runs steps 5 to 7 on the `synth_board.py` views and checks:
+- no warning is printed;
+- rms is under 0.3 px and k1 is within 0.02 of the true value;
+- the table is within 1 px of the true lens's table on average;
+- the largest bend drops from over 1 px to under 0.6 px.
+
+It also checks the bit layout, rounding and clamping, the `--max-views` cap, and that every failure leaves no file behind.
 
 ## Earlier tool
 `src/undistort_table.cpp` is the earlier interactive tool. It needs camera parameters from `opencv_interactive-calibration` and shows each frame in a window; `dewarp_table.py` replaces it.

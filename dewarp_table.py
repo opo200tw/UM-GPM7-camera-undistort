@@ -56,6 +56,8 @@ def frames(src):
 def find_boards(src, board, size, step, limit=None, remap=None):
     """Corner sets from every step-th frame; stops at limit sets, end of input or Ctrl-C."""
     found = []
+    if step is None:
+        step = 1 if os.path.isdir(src) else 10
     try:
         for i, img in enumerate(frames(src)):
             if i % step:
@@ -115,10 +117,18 @@ def bend(corners, board):
     return worst
 
 
+def stream_limit(args):
+    # A live stream has no end, so it stops at --max-views; a file is read to the end
+    return args.max_views if "://" in args.src else None
+
+
 def calibrate(args):
-    found = find_boards(args.src, args.board, args.size, args.step, args.max_views)
+    found = find_boards(args.src, args.board, args.size, args.step, stream_limit(args))
     if len(found) < args.min_views:
         raise SystemExit(f"board found in {len(found)} frames, need {args.min_views}")
+    if len(found) > args.max_views:
+        # Spread over the whole recording, so poses from its end (often the corners) count too
+        found = [found[i] for i in np.linspace(0, len(found) - 1, args.max_views).round().astype(int)]
     obj = np.zeros((args.board[0] * args.board[1], 3), np.float32)
     obj[:, :2] = np.mgrid[0:args.board[0], 0:args.board[1]].T.reshape(-1, 2)
     rms, K, D, _, _ = cv2.calibrateCamera([obj] * len(found), found, args.size, None, None)
@@ -163,7 +173,7 @@ def calibrate(args):
 
 def check(args):
     remap = unpack(read_table(args.table, args.size), args.size) if args.table else None
-    found = find_boards(args.src, args.board, args.size, args.step, args.max_views, remap)
+    found = find_boards(args.src, args.board, args.size, args.step, stream_limit(args), remap)
     if not found:
         raise SystemExit("board not found in any frame")
     worst = sorted(bend(c, args.board) for c in found)
@@ -172,21 +182,23 @@ def check(args):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("src", help="video file, rtsp:// URL or image directory")
+    common.add_argument("--board", type=wxh, default=(6, 9), help="inner corners WxH (default 6x9)")
+    common.add_argument("--size", type=wxh, default=(1280, 720), help="stream size WxH (default 1280x720)")
+    common.add_argument("--step", type=positive, help="use every Nth frame (default 10, 1 for an image directory)")
+    common.add_argument("--max-views", type=positive, default=40,
+                        help="calibrate on at most this many boards spread over the input; "
+                             "a stream URL stops there (default 40)")
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--board", type=wxh, default=(6, 9), help="inner corners WxH (default 6x9)")
-    p.add_argument("--size", type=wxh, default=(1280, 720), help="stream size WxH (default 1280x720)")
-    p.add_argument("--step", type=positive, default=10, help="use every Nth frame (default 10)")
-    p.add_argument("--max-views", type=positive, default=40, help="stop after this many boards (default 40)")
     sub = p.add_subparsers(required=True)
-    c = sub.add_parser("calibrate")
+    c = sub.add_parser("calibrate", parents=[common])
     c.set_defaults(func=calibrate)
-    c.add_argument("src", help="video file, rtsp:// URL or image directory")
     c.add_argument("-o", "--out", default="tables", help="parent of the version directories (default tables)")
     c.add_argument("--min-views", type=positive, default=10)
     c.add_argument("--max-rms", type=float, default=1.0)
-    k = sub.add_parser("check")
+    k = sub.add_parser("check", parents=[common])
     k.set_defaults(func=check)
-    k.add_argument("src", help="video file, rtsp:// URL or image directory")
     k.add_argument("--table", help="remap frames by this table first")
     args = p.parse_args()
     args.func(args)
