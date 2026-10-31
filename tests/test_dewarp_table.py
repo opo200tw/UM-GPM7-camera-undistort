@@ -93,10 +93,18 @@ class EndToEnd(unittest.TestCase):
 
     def test_calibrate_then_check(self):
         out = self.run_tool("calibrate", self.src)
-        with open(os.path.join(self.tmp.name, "dewarp_int.bin"), "rb") as f:
+        (version,) = os.listdir(os.path.join(self.tmp.name, "tables"))
+        table = os.path.join("tables", version, "dewarp_int.bin")
+        with open(os.path.join(self.tmp.name, table), "rb") as f:
             data = f.read()
+        crc = f"{zlib.crc32(data):08x}"
         self.assertEqual(len(data), SIZE[0] * SIZE[1] * 4)
-        self.assertIn(f"crc32 {zlib.crc32(data):08x}", out)
+        self.assertIn(f"crc32 {crc}", out)
+        self.assertTrue(version.endswith("-" + crc))
+        fs = cv2.FileStorage(os.path.join(self.tmp.name, "tables", version, "camera_param.yml"),
+                             cv2.FILE_STORAGE_READ)
+        self.assertEqual(fs.getNode("crc32").string(), crc)
+        fs.release()
 
         got = np.frombuffer(data, "<u4")
         want = dt.make_table(K, D, SIZE)
@@ -107,7 +115,7 @@ class EndToEnd(unittest.TestCase):
         self.assertLess(np.percentile(err, 95), 2.0)
 
         before = float(self.run_tool("check", self.src).split()[4])
-        after = float(self.run_tool("check", self.src, "--table", "dewarp_int.bin").split()[4])
+        after = float(self.run_tool("check", self.src, "--table", table).split()[4])
         self.assertGreater(before, 2.0)
         self.assertLess(after, 1.0)
 

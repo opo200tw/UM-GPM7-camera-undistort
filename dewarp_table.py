@@ -2,7 +2,8 @@
 """Chessboard footage in, General Plus IPU dewarp table (dewarp_int.bin) out, no GUI.
 
 calibrate: find the board in a video, a stream URL or an image directory, calibrate the
-           lens, write camera_param.yml and the table, print the table's CRC32.
+           lens, write the table and camera_param.yml into tables/<date>-<crc32>/,
+           print the table's CRC32.
 check:     report how far the board's rows and columns bend; with --table, after
            remapping each frame the way the firmware does (nearest neighbour).
 """
@@ -11,6 +12,7 @@ import glob
 import logging
 import os
 import sys
+import time
 import zlib
 
 import cv2
@@ -138,18 +140,25 @@ def calibrate(args):
                     "Record with no dewarp_int.bin on the card")
 
     data = table.tobytes()
-    with open(args.out + ".tmp", "wb") as f:
+    crc = f"{zlib.crc32(data):08x}"
+    # One directory per table version; the CRC32 in its name is the one the firmware logs on load
+    version = os.path.join(args.out, f"{time.strftime('%Y%m%d')}-{crc}")
+    os.makedirs(version, exist_ok=True)
+    path = os.path.join(version, "dewarp_int.bin")
+    with open(path + ".tmp", "wb") as f:
         f.write(data)
-    os.replace(args.out + ".tmp", args.out)
-    fs = cv2.FileStorage(args.params, cv2.FILE_STORAGE_WRITE)
+    os.replace(path + ".tmp", path)
+    fs = cv2.FileStorage(os.path.join(version, "camera_param.yml"), cv2.FILE_STORAGE_WRITE)
     fs.write("cameraMatrix", K)
     fs.write("dist_coeffs", D)
     fs.write("image_width", w)
     fs.write("image_height", h)
     fs.write("rms", rms)
     fs.write("views", len(found))
+    fs.write("crc32", crc)
+    fs.write("source", args.src)
     fs.release()
-    print(f"{args.out}: {len(data)} bytes, crc32 {zlib.crc32(data):08x}, max shift {shift:.1f} px")
+    print(f"{path}: {len(data)} bytes, crc32 {crc}, max shift {shift:.1f} px")
 
 
 def check(args):
@@ -172,8 +181,7 @@ def main():
     c = sub.add_parser("calibrate")
     c.set_defaults(func=calibrate)
     c.add_argument("src", help="video file, rtsp:// URL or image directory")
-    c.add_argument("-o", "--out", default="dewarp_int.bin")
-    c.add_argument("--params", default="camera_param.yml")
+    c.add_argument("-o", "--out", default="tables", help="parent of the version directories (default tables)")
     c.add_argument("--min-views", type=positive, default=10)
     c.add_argument("--max-rms", type=float, default=1.0)
     k = sub.add_parser("check")
