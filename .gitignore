@@ -10,3 +10,7 @@ CMake*
 
 .cursorindexingignore
 .specstory
+
+__pycache__
+dewarp_int.bin
+camera_param.yml
