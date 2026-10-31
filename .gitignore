@@ -10,3 +10,6 @@ CMake*
 
 .cursorindexingignore
 .specstory
+
+__pycache__
+*.tmp
