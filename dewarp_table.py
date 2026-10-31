@@ -24,6 +24,13 @@ def wxh(text):
     return int(w), int(h)
 
 
+def positive(text):
+    n = int(text)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return n
+
+
 def frames(src):
     if os.path.isdir(src):
         for path in sorted(glob.glob(os.path.join(src, "*"))):
@@ -116,15 +123,24 @@ def calibrate(args):
     log.info("views %d, rms %.3f px\nK\n%s\nD %s", len(found), rms, K, D.ravel())
     if rms > args.max_rms:
         raise SystemExit(f"rms {rms:.3f} px is above --max-rms {args.max_rms}")
+    w, h = args.size
+    pts = np.concatenate(found)
+    # The lens model is only fitted where the board was seen; frame corners need it most
+    for cx, cy in ((0, 0), (w, 0), (0, h), (w, h)):
+        if not np.any((np.abs(pts[:, 0] - cx) < w / 4) & (np.abs(pts[:, 1] - cy) < h / 4)):
+            log.warning("no board corner near frame corner (%d, %d): the table is extrapolated there", cx, cy)
 
     table = make_table(K, D, args.size)
-    w, h = args.size
     mapx, mapy = unpack(table, args.size)
     shift = np.hypot(mapx - np.arange(w), mapy - np.arange(h)[:, None]).max()
-    if shift < 1:
-        log.warning("table moves no pixel: was the footage already dewarped? "
+    if shift < 5:
+        log.warning("table moves pixels by under 5 px: was the footage already dewarped? "
                     "Record with no dewarp_int.bin on the card")
 
+    data = table.tobytes()
+    with open(args.out + ".tmp", "wb") as f:
+        f.write(data)
+    os.replace(args.out + ".tmp", args.out)
     fs = cv2.FileStorage(args.params, cv2.FILE_STORAGE_WRITE)
     fs.write("cameraMatrix", K)
     fs.write("dist_coeffs", D)
@@ -133,11 +149,6 @@ def calibrate(args):
     fs.write("rms", rms)
     fs.write("views", len(found))
     fs.release()
-    data = table.tobytes()
-    with open(args.out, "wb") as f:
-        f.write(data)
-    if os.path.getsize(args.out) != w * h * 4:
-        raise SystemExit(f"{args.out} is not {w * h * 4} bytes")
     print(f"{args.out}: {len(data)} bytes, crc32 {zlib.crc32(data):08x}, max shift {shift:.1f} px")
 
 
@@ -155,20 +166,22 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--board", type=wxh, default=(6, 9), help="inner corners WxH (default 6x9)")
     p.add_argument("--size", type=wxh, default=(1280, 720), help="stream size WxH (default 1280x720)")
-    p.add_argument("--step", type=int, default=10, help="use every Nth frame (default 10)")
-    p.add_argument("--max-views", type=int, default=40, help="stop after this many boards (default 40)")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p.add_argument("--step", type=positive, default=10, help="use every Nth frame (default 10)")
+    p.add_argument("--max-views", type=positive, default=40, help="stop after this many boards (default 40)")
+    sub = p.add_subparsers(required=True)
     c = sub.add_parser("calibrate")
+    c.set_defaults(func=calibrate)
     c.add_argument("src", help="video file, rtsp:// URL or image directory")
     c.add_argument("-o", "--out", default="dewarp_int.bin")
     c.add_argument("--params", default="camera_param.yml")
-    c.add_argument("--min-views", type=int, default=10)
+    c.add_argument("--min-views", type=positive, default=10)
     c.add_argument("--max-rms", type=float, default=1.0)
     k = sub.add_parser("check")
+    k.set_defaults(func=check)
     k.add_argument("src", help="video file, rtsp:// URL or image directory")
     k.add_argument("--table", help="remap frames by this table first")
     args = p.parse_args()
-    calibrate(args) if args.cmd == "calibrate" else check(args)
+    args.func(args)
 
 
 if __name__ == "__main__":

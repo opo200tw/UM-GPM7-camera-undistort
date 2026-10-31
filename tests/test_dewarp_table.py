@@ -111,11 +111,16 @@ class EndToEnd(unittest.TestCase):
         self.assertGreater(before, 2.0)
         self.assertLess(after, 1.0)
 
-    def test_wrong_size_fails(self):
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "dewarp_table.py"), "--size", "640x480",
-                            "calibrate", self.src], capture_output=True, text=True, cwd=self.tmp.name)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("expected 640x480", r.stderr)
+    def test_failures_write_nothing(self):
+        for args, why in ((["--size", "640x480", "calibrate"], "expected 640x480"),
+                          (["calibrate", "--min-views", "99"], "need 99"),
+                          (["calibrate", "--max-rms", "0.001"], "above --max-rms")):
+            with tempfile.TemporaryDirectory() as cwd:
+                r = subprocess.run([sys.executable, os.path.join(ROOT, "dewarp_table.py"), "--step", "1",
+                                    *args, self.src], capture_output=True, text=True, cwd=cwd)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn(why, r.stderr)
+                self.assertEqual(os.listdir(cwd), [])
 
 
 if __name__ == "__main__":
