@@ -166,7 +166,7 @@ def calibrate(args):
     fs.write("rms", rms)
     fs.write("views", len(found))
     fs.write("crc32", crc)
-    fs.write("source", args.src)
+    fs.write("source", args.src if "://" in args.src else os.path.abspath(args.src))
     fs.release()
     print(f"{path}: {len(data)} bytes, crc32 {crc}, max shift {shift:.1f} px")
 

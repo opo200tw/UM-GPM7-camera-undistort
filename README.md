@@ -122,18 +122,29 @@ flowchart TD
 
 | # | Who | Do | Expect | If not | Time |
 |---|-----|----|--------|--------|------|
-| 1 | AUTO | UART `usb storage rw`; when `<card>` mounts, copy the whole card to a backup directory, then move `<card>/dewarp_int.bin` into it; `diskutil eject <card>`; UART `usb camera` | the backup holds `dewarp_int.bin`, the card root does not | the card mounts read-only: the build has `USB_STORAGE_WPROTECT=1`, use another image | bench timing pending |
-| 2 | AUTO | wait for boot and watch the UART | `[W][IPU] Failed to open dewarp_int.bin, using Identity table` | `Loaded dewarp table`: the file is still on the card, back to step 1 | bench timing pending |
-| 3 | HUMAN | count the inner corners of the board (corners where four squares meet), across then down | 6x9, the default | pass `--board <across>x<down>` in steps 5, 6, 7 and 11 | bench timing pending; once per board |
+| 1 | AUTO | card cycle (see [Card access](#card-access)): move `<card>/dewarp_int.bin` into a backup directory and compare the copy | the backup holds the table (3686400 bytes), the card root does not | the card mounts read-only: the build has `USB_STORAGE_WPROTECT=1`, use another image | 66 s with step 2 |
+| 2 | AUTO | wait for boot and watch the UART | `[W][IPU] Failed to open dewarp_int.bin, using Identity table` | `Loaded dewarp table`: the file is still on the card, back to step 1 | in step 1 |
+| 3 | HUMAN | count the inner corners of the board (corners where four squares meet), across then down | 6x9, the default | pass `--board <across>x<down>` in steps 5, 6, 7 and 11 | not measured yet; once per board |
 | 4 | HUMAN + AUTO | person: move the board across the whole frame, into each corner and along each edge, tilting it; agent at the same time: `ffmpeg -rtsp_transport udp -i rtsp://<camera>:8080 -t 30 -c copy raw.mkv` | `raw.mkv`, H.264 1280x720, 30 s | `461 Unsupported Transport`: TCP was used, keep `-rtsp_transport udp`; no frames: check the IP and that the stream is up | 30 s |
 | 5 | AUTO | `python3 dewarp_table.py check raw.mkv` | `views N, bend median M px, max X px`; note it as BEFORE | `board not found in any frame`: board too small, blurred or the wrong `--board` | 2 s |
 | 6 | AUTO | `python3 dewarp_table.py calibrate raw.mkv` | `tables/<date>-<crc32>/dewarp_int.bin: 3686400 bytes, crc32 <crc>, max shift S px`, and no warning line | a failure or a warning listed below: record again (step 4) | 4 s |
 | 7 | AUTO | `python3 dewarp_table.py check raw.mkv --table <v>/dewarp_int.bin` | max bend well below BEFORE; note it as PREDICTED | not lower: the footage does not cover the frame, record again | 3 s |
-| 8 | AUTO | UART `usb storage rw`; copy `<v>/dewarp_int.bin` to the card root under that name; `diskutil eject <card>`; UART `usb camera` | the card root holds the new file, 3686400 bytes | the copy fails: card read-only, see step 1 | bench timing pending |
-| 9 | AUTO | wait for boot and watch the UART | `[I][IPU] Loaded dewarp table: 3686400 bytes from dewarp_int.bin, crc32 <crc>`, with `<crc>` from step 6 | another CRC: an old file is on the card; `Dewarp table size ...` or `entry ... outside`: the file is damaged, copy again | bench timing pending |
+| 8 | AUTO | card cycle: copy `<v>/dewarp_int.bin` to the card root under that name and compare it | the card root holds the new file, 3686400 bytes | the copy fails: card read-only, see step 1 | 69 s with step 9 |
+| 9 | AUTO | wait for boot and watch the UART | `[I][IPU] Loaded dewarp table: 3686400 bytes from dewarp_int.bin, crc32 <crc>`, with `<crc>` from step 6, and `dewarp=1` in the `SD card role:` line | another CRC: an old file is on the card; `Dewarp table size ...` or `entry ... outside`: the file is damaged, copy again | in step 8 |
 | 10 | HUMAN + AUTO | as step 4, writing `after.mkv` | `after.mkv`, 30 s | as step 4 | 30 s |
 | 11 | AUTO | `python3 dewarp_table.py check after.mkv` | max bend close to PREDICTED and well below BEFORE; note it as AFTER | much higher: the device did not load this table (recheck step 9) or the board did not cover the frame | 2 s |
-| 12 | AUTO | `git add <v>` and commit; on the card either keep the new table or put the backup's `dewarp_int.bin` back (as step 8) and check its CRC on boot (as step 9) | the version is in git (the `.bin` through LFS) | | bench timing pending |
+| 12 | AUTO | `git add <v>` and commit; on the card either keep the new table or put the backup's `dewarp_int.bin` back (as step 8) and check its CRC on boot (as step 9) | the version is in git (the `.bin` through LFS); the restored table's CRC as it was before step 1 | | 70 s for the restore cycle |
+
+### Card access
+By hand, a card cycle is: UART `usb storage rw` (the camera reboots into writable storage mode and the card mounts on the Mac), copy in Finder, eject, UART `usb camera` (the camera reboots into camera mode).
+
+The camera repo's `card_cycle.sh` (skill tutk-test-sd) runs the same cycle unattended:
+1. It cuts the power first, because the UART can garble `usb storage rw` in camera mode.
+2. It sends `usb storage rw` early in boot. The firmware answers `Boot not finished, 'usb storage rw' deferred until the boot completes`, then `Rebooting into USB storage mode, writable`.
+3. The card mounts as `/Volumes/NO NAME`. The copy runs from Terminal.app through a `.command` file, because macOS refuses removable volumes to background processes ("Operation not permitted").
+4. It runs `diskutil unmount`, then `usb camera`, and the firmware prints `Leaving USB storage mode on request, rebooting into camera mode`.
+
+One cycle took 66 to 70 s from power cut to login, and the IPU line appears about 1 s before login. The repo's card backup script copies only `files/` and `temp_history/`, so step 1 has to keep its own copy of the table.
 
 ### What calibrate rejects
 It fails and writes nothing when:
@@ -150,12 +161,15 @@ Automated: card backup and file moves, boot checks on the UART, recording, both 
 
 Never automated: moving a real chessboard in front of the real lens (steps 4 and 10). The table describes that lens, so a rendered board cannot stand in for it. Counting the corners (step 3) is needed once per physical board.
 
-Stand-in for the manual steps: `python3 synth_board.py <dir>` renders a 6x9 board through a known lens (fx = fy = 900, k1 = -0.30, k2 = 0.10) in poses that cover the corners, edges and middle, and writes the views as PNG images. Use `<dir>` in place of `raw.mkv` in steps 5 to 7, and copy that table through steps 8 and 9, to check the whole flow on the device without a person. The bend numbers it gives prove the pipeline, not the lens. It takes under 1 s for the images and about 1 s per tool step.
+Stand-in for the manual steps: `python3 synth_board.py <dir>` renders a 6x9 board through a known lens (fx = fy = 900, k1 = -0.30, k2 = 0.10) in poses that cover the corners, edges and middle, and writes the views as PNG images. Use `<dir>` in place of `raw.mkv` in steps 5 to 7, and copy that table through steps 8 and 9, to check the whole flow on the device without a person. The bend numbers it gives prove the pipeline, not the lens. It takes under 1 s for the images and about 1 s per tool step. On 2026-10-31 this flow passed on the EVB: the synthetic table loaded with a matching UART CRC32, and the original table went back with its own CRC32.
 
 ### Options
 All options go after the subcommand. Both take `--board`, `--size`, `--step` (default 10 for a video or stream, 1 for an image directory) and `--max-views`. `calibrate` uses at most `--max-views` boards (default 40), spread over the whole recording; a stream URL stops reading once it has that many. `calibrate` also takes `--min-views`, `--max-rms` and `-o` (the parent of the version directories), and `check` takes `--table`. Keep `--size` at the stream size: the firmware rejects a table of any other size.
 
-The camera's RTSP server refuses TCP interleaved transport (SETUP answers 461 Unsupported Transport). Use UDP: ffmpeg with `-rtsp_transport udp`, or `start_gstreamer.sh`, whose `rtspsrc` uses UDP by default and finishes the file on Ctrl-C.
+The camera's RTSP server refuses TCP interleaved transport (SETUP answers 461 Unsupported Transport) and streams H.264 1280x720 at 25 fps over UDP:
+- ffmpeg needs `-rtsp_transport udp`.
+- An `rtsp://` URL given straight to `dewarp_table.py` works: OpenCV logs `SETUP failed: 461` once, then falls back to UDP.
+- `start_gstreamer.sh` uses UDP and finishes the file on Ctrl-C. The first gstreamer run on a machine spends about 37 s rebuilding its plugin registry with no output, so run `gst-inspect-1.0 rtspsrc` once beforehand, or allow for it in a timeout. `autovideosink` may log a `glcaopengllayer` error on macOS; recording continues.
 
 ### Versions
 Every `calibrate` run that succeeds adds a directory under `tables/` named after the date and the table's CRC32, holding the table and the `camera_param.yml` it came from. The YAML also records the CRC32 and the footage it was calibrated from. Old versions stay where they are, so going back to one means copying its `dewarp_int.bin` to the card again.
