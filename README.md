@@ -69,7 +69,7 @@ I use gstreamer to record the RTSP stream.
  - Run tutk project
  - Run Gstreamer RTSP client to store the video. Please replace url and location.
  ```
- gst-launch-1.0 rtspsrc location=rtsp://192.168.0.31:8080 ! `
+ gst-launch-1.0 rtspsrc location=rtsp://admin:<password>@192.168.0.31:8080 ! `
 	application/x-rtp, media=video, encoding-name=H264  ! `
 	queue ! rtph264depay ! h264parse ! tee name=t `
 	t. ! queue ! matroskamux ! filesink location=received_h264.mkv `
@@ -125,7 +125,7 @@ flowchart TD
 | 1 | AUTO | card cycle (see [Card access](#card-access)): move `<card>/dewarp_int.bin` into a backup directory and compare the copy | the backup holds the table (3686400 bytes), the card root does not | the card mounts read-only: the build has `USB_STORAGE_WPROTECT=1`, use another image | 66 s with step 2 |
 | 2 | AUTO | wait for boot and watch the UART | `[W][IPU] Failed to open dewarp_int.bin, using Identity table` | `Loaded dewarp table`: the file is still on the card, back to step 1 | in step 1 |
 | 3 | HUMAN | count the inner corners of the board (corners where four squares meet), across then down | 6x9, the default | pass `--board <across>x<down>` in steps 5, 6, 7 and 11 | not measured yet; once per board |
-| 4 | HUMAN + AUTO | person: move the board across the whole frame, into each corner and along each edge, tilting it; agent at the same time: `ffmpeg -rtsp_transport udp -i rtsp://<camera>:8080 -t 30 -c copy raw.mkv` | `raw.mkv`, H.264 1280x720, 30 s | `461 Unsupported Transport`: TCP was used, keep `-rtsp_transport udp`; no frames: check the IP and that the stream is up | 30 s |
+| 4 | HUMAN + AUTO | person: move the board across the whole frame, into each corner and along each edge, tilting it; agent at the same time: `ffmpeg -rtsp_transport udp -i rtsp://admin:<password>@<camera>:8080 -t 30 -c copy raw.mkv` | `raw.mkv`, H.264 1280x720, 30 s | `461 Unsupported Transport`: TCP was used, keep `-rtsp_transport udp`; `401 Unauthorized`: wrong or missing password; `403 Forbidden`: no device password stored; no frames: check the IP and that the stream is up | 30 s |
 | 5 | AUTO | `python3 dewarp_table.py check raw.mkv` | `views N, bend median M px, max X px`; note it as BEFORE | `board not found in any frame`: board too small, blurred or the wrong `--board` | 2 s |
 | 6 | AUTO | `python3 dewarp_table.py calibrate raw.mkv` | `tables/<date>-<crc32>/dewarp_int.bin: 3686400 bytes, crc32 <crc>, max shift S px`, and no warning line | a failure or a warning listed below: record again (step 4) | 4 s |
 | 7 | AUTO | `python3 dewarp_table.py check raw.mkv --table <v>/dewarp_int.bin` | max bend well below BEFORE; note it as PREDICTED | not lower: the footage does not cover the frame, record again | 3 s |
@@ -167,9 +167,10 @@ Stand-in for the manual steps: `python3 synth_board.py <dir>` renders a 6x9 boar
 All options go after the subcommand. Both take `--board`, `--size`, `--step` (default 10 for a video or stream, 1 for an image directory) and `--max-views`. `calibrate` uses at most `--max-views` boards (default 40), spread over the whole recording; a stream URL stops reading once it has that many. `calibrate` also takes `--min-views`, `--max-rms` and `-o` (the parent of the version directories), and `check` takes `--table`. Keep `--size` at the stream size: the firmware rejects a table of any other size.
 
 The camera's RTSP server refuses TCP interleaved transport (SETUP answers 461 Unsupported Transport) and streams H.264 1280x720 at 25 fps over UDP:
+- Every request but OPTIONS needs an HTTP Digest login (opo200tw/UM-GPM7-camera#1978), realm `GPM7 web admin`, MD5, the same one as the web admin page: user `admin` and the device password, given in the URL as `rtsp://admin:<password>@<camera>:8080/`. The device password is the one stored with `devpw set`; an EVB image with none stored uses the development password `DEVICE_PASSWORD_DEV` in the camera repo's `cam/common_used/inc/device_password.h`, and a product image with none stored answers 403 Forbidden. After a few wrong passwords from one address the next attempts wait (401 with `Retry-After`), as on the web page. A URL with the password in it shows in the process list and the shell history, so keep it in a variable read from a file that only you can read.
 - ffmpeg needs `-rtsp_transport udp`.
 - An `rtsp://` URL given straight to `dewarp_table.py` works: OpenCV logs `SETUP failed: 461` once, then falls back to UDP.
-- `start_gstreamer.sh` uses UDP and finishes the file on Ctrl-C. The first gstreamer run on a machine spends about 37 s rebuilding its plugin registry with no output, so run `gst-inspect-1.0 rtspsrc` once beforehand, or allow for it in a timeout. `autovideosink` may log a `glcaopengllayer` error on macOS; recording continues.
+- `start_gstreamer.sh` uses UDP and finishes the file on Ctrl-C. It takes the login out of the URL and hands it to `rtspsrc` as `user-id`/`user-pw`, because gst-launch prints the URL it connects to; the password is passed as written, not percent-decoded. The first gstreamer run on a machine spends about 37 s rebuilding its plugin registry with no output, so run `gst-inspect-1.0 rtspsrc` once beforehand, or allow for it in a timeout. `autovideosink` may log a `glcaopengllayer` error on macOS; recording continues.
 
 ### Versions
 Every `calibrate` run that succeeds adds a directory under `tables/` named after the date and the table's CRC32, holding the table and the `camera_param.yml` it came from. The YAML also records the CRC32 and the footage it was calibrated from. Old versions stay where they are, so going back to one means copying its `dewarp_int.bin` to the card again.
@@ -183,7 +184,7 @@ The firmware only opens `dewarp_int.bin` in the card root and has no version fie
 - the table is within 1 px of the true lens's table on average;
 - the largest bend drops from over 1 px to under 0.6 px.
 
-It also checks the bit layout, rounding and clamping, the `--max-views` cap, and that every failure leaves no file behind.
+It also checks the bit layout, rounding and clamping, the `--max-views` cap, and that every failure leaves no file behind. With a stub `gst-launch-1.0` on `PATH` it checks that `start_gstreamer.sh` prints no password from the URL and hands the login to `rtspsrc`.
 
 ## Earlier tool
 `src/undistort_table.cpp` is the earlier interactive tool. It needs camera parameters from `opencv_interactive-calibration` and shows each frame in a window; `dewarp_table.py` replaces it.
