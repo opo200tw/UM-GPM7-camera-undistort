@@ -17,6 +17,18 @@ if [[ ! "$RTSP_URL" =~ ^rtsp:// ]]; then
     RTSP_URL="rtsp://$RTSP_URL"
 fi
 
+# rtsp://admin:<password>@host is the RTSP Digest login (opo200tw/UM-GPM7-camera#1978). gst-launch
+# prints the URL it connects to, so the login goes to rtspsrc as user-id/user-pw and leaves the URL
+AUTH=()
+if [[ "$RTSP_URL" =~ ^rtsp://(.*)@([^@]*)$ ]]; then
+    USERINFO=${BASH_REMATCH[1]}
+    RTSP_URL="rtsp://${BASH_REMATCH[2]}"
+    AUTH=(user-id="${USERINFO%%:*}")
+    if [[ "$USERINFO" == *:* ]]; then
+        AUTH+=(user-pw="${USERINFO#*:}")
+    fi
+fi
+
 if [[ ! "$RTSP_URL" =~ :[0-9]+ ]]; then
     RTSP_URL="$RTSP_URL:8080"
 fi
@@ -30,7 +42,7 @@ export GST_DEBUG=$DEBUG_LEVEL
 
 # -e: Ctrl-C sends EOS first, so matroskamux finishes the file
 gst-launch-1.0 -e --gst-debug-level=$DEBUG_LEVEL \
-    rtspsrc location="$RTSP_URL" latency=0 buffer-mode=auto ! \
+    rtspsrc location="$RTSP_URL" "${AUTH[@]}" latency=0 buffer-mode=auto ! \
     rtph264depay ! h264parse ! tee name=t \
     t. ! queue ! matroskamux ! filesink location="$OUTPUT_FILE" \
     t. ! queue ! avdec_h264 ! videoconvert ! autovideosink sync=false
@@ -43,7 +55,7 @@ else
     echo "嘗試使用備用 pipeline..."
     
     gst-launch-1.0 -e --gst-debug-level=$DEBUG_LEVEL \
-        rtspsrc location="$RTSP_URL" latency=0 ! \
+        rtspsrc location="$RTSP_URL" "${AUTH[@]}" latency=0 ! \
         decodebin ! videoconvert ! x264enc ! matroskamux ! \
         filesink location="$OUTPUT_FILE"
     
